@@ -1,0 +1,156 @@
+---
+title: "Normalized forward and reverse subtraction"
+author: "Stefano Pellegrini"
+date: "3/28/2021"
+output: html_document
+---
+
+# Load packages and functions
+
+```{r results="hide",message=FALSE, warning=FALSE}
+library(rtracklayer)
+library(tidyverse)
+library(ggforce)
+library(GenomicRanges)
+library(reshape2)
+library(RColorBrewer)
+source("main_script_thesis.R")
+```
+
+
+# Initialize
+
+```{r}
+# To set
+ATAC_BP_EXT <- 150
+TIMEPOINT <- "timepoint_0to2_all"
+# Input
+PATH_METADATA <- "../Data/ML_input/timepoint_0to2_all_pos_neg_shift/merged/metadata_pos_neg_shift_timepoint_0to2_all_merged.csv"
+PATH_PROFILES <- "../Data/ML_input/timepoint_0to2_all_pos_neg_shift/merged/profiles_pos_neg_shift_timepoint_0to2_all_merged.csv"
+# Output
+EXTRACTION <- "pos_neg_shift"
+FILENAME_MERGED_SUBTNORM <- paste0(EXTRACTION, "_timepoint_0to2all_merged_subtnorm")
+OUT_DIR <- paste0(TIMEPOINT, "_pos_neg_shift/")
+# Other
+len_vec <- ATAC_BP_EXT * 2 + 1
+```
+
+
+# Load data and check original profiles
+
+```{r}
+# Load data 
+windows_metadata <- read.csv(PATH_METADATA, header = TRUE)
+windows_profiles <- read.csv(PATH_PROFILES, header = TRUE) %>% select(-label)
+
+# Split positive and negative
+pos_neg_windows <- split_pos_neg(windows_profiles, windows_metadata)
+pos_windows <- pos_neg_windows$pos
+neg_windows <- pos_neg_windows$neg
+```
+
+
+```{r}
+## Explore original profiles
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(pos_windows$profiles)
+plot_cage_distribution_by_peak_position(neg_windows$profiles)
+
+# Exploration of different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(pos_windows)
+plot_score_distribution_by_pos_by_chr(neg_windows)
+
+# Plot some profiles
+plot_set_profiles(neg_windows, chr = "chr1", sort=FALSE) 
+plot_set_profiles(neg_windows, chr = "chr6", sort=FALSE) 
+plot_set_profiles(neg_windows, chr = "chr11", sort=FALSE) 
+plot_set_profiles(neg_windows, chr = "chr2", sort=FALSE) 
+plot_set_profiles(neg_windows, chr = "chr3", sort=FALSE) 
+plot_set_profiles(neg_windows, chr = "chr4", sort=FALSE) 
+```
+
+
+# Apply forward and reverse subtraction and normalization (timepoint 0 to 2)
+
+```{r}
+# Apply normalized subtraction
+windows_profiles_subtnorm <- report_time_execution(strands_norm_subtraction_all_windows(windows_profiles))
+windows_profiles_subtnorm <- windows_profiles_subtnorm %>% mutate(label = windows_metadata$label)
+windows_metadata_subtnorm <- windows_metadata
+windows_profiles_subtnorm
+
+memory.limit()
+```
+
+## Export
+
+```{r}
+## Export
+
+# Divide train and test by chr
+test_index <- windows_metadata_subtnorm$chr %in% c("chr2", "chr3", "chr4")
+windows_profile_test <- windows_profiles_subtnorm[test_index,]
+windows_metadata_test <- windows_metadata_subtnorm[test_index,]
+windows_profile_train <- windows_profiles_subtnorm[!test_index,]
+windows_metadata_train <- windows_metadata_subtnorm[!test_index,]
+
+paste("Size train:", nrow(windows_profile_train))
+paste("Positive profiles train:", nrow(windows_profile_test[windows_metadata_train$label==1,]))
+paste("Negative profiles train:", nrow(windows_profile_test[windows_metadata_train$label==0,]))
+paste("Size test:", nrow(windows_profile_test))
+paste("Positive profiles test:", nrow(windows_profile_test[windows_metadata_test$label==1,]))
+paste("Negative profiles test:", nrow(windows_profile_test[windows_metadata_test$label==0,]))
+
+# Export
+write_csv(windows_profiles_subtnorm, paste0("../Data/ML_input/profiles_", FILENAME_MERGED_SUBTNORM, ".csv"))
+write_csv(windows_metadata_subtnorm, paste0("../Data/ML_input/metadata_", FILENAME_MERGED_SUBTNORM, ".csv"))
+write_csv(windows_profile_test, paste0("../Data/ML_input/profiles_", FILENAME_MERGED_SUBTNORM, "_test.csv"))
+write_csv(windows_metadata_test, paste0("../Data/ML_input/metadata_", FILENAME_MERGED_SUBTNORM, "_test.csv"))
+write_csv(windows_profile_train, paste0("../Data/ML_input/profiles_", FILENAME_MERGED_SUBTNORM, "_train.csv"))
+write_csv(windows_metadata_train, paste0("../Data/ML_input/metadata_", FILENAME_MERGED_SUBTNORM, "_train.csv"))
+```
+
+
+# Explore obtained profiles
+
+```{r}
+# Split positive and negative
+pos_neg_windows <- split_pos_neg(windows_profiles_subtnorm, windows_metadata_subtnorm)
+pos_windows <- pos_neg_windows$pos
+neg_windows <- pos_neg_windows$neg
+```
+
+
+```{r}
+# Plot profiles distribution all chromosome
+plot_subt_score_distribution_by_pos(pos_windows$profiles, save=TRUE,
+                                    path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_subt_score_by_pos.png"))
+plot_subt_score_distribution_by_pos(neg_windows$profiles, save=TRUE,
+                                    path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_subt_score_by_pos.png"))
+
+# Plot profiles distribution by chromosome
+plot_subt_score_distribution_by_pos_by_chr(pos_windows, save=TRUE,
+                                           path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_subt_score_by_pos_by_chr.png"))
+# plot_subt_score_distribution_by_pos_by_chr(pos_windows, scales="fixed", save=TRUE,
+#                                            path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_subt_score_by_pos_by_chr_fixedAxis.png"))
+plot_subt_score_distribution_by_pos_by_chr(neg_windows, save=TRUE,
+                                           path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_subt_score_by_pos_by_chr.png"))
+# plot_subt_score_distribution_by_pos_by_chr(neg_windows, scales="fixed", save=TRUE,
+#                                            path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_subt_score_by_pos_by_chr_fixedAxis.png"))
+
+# Plot some profiles
+plot_subt_set_profiles(pos_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles1.png")) 
+plot_subt_set_profiles(pos_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles11.png")) 
+plot_subt_set_profiles(pos_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles2.png")) 
+plot_subt_set_profiles(pos_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles3.png")) 
+plot_subt_set_profiles(pos_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles4.png")) 
+plot_subt_set_profiles(neg_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles1.png")) 
+plot_subt_set_profiles(neg_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles11.png")) 
+plot_subt_set_profiles(neg_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles2.png")) 
+plot_subt_set_profiles(neg_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles3.png")) 
+plot_subt_set_profiles(neg_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles4.png")) 
+```
+
+
+
