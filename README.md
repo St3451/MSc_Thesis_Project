@@ -6,6 +6,8 @@ This repository contains the report, presentation slides, and code of my MSc the
 * [Project report](https://github.com/St3451/Thesis_Project_Andersson_Lab/blob/master/Thesis_report.pdf)
 * [Presentation slides](https://github.com/St3451/Thesis_Project_Andersson_Lab/raw/master/Presentation_slides.pptx)
 * [Project code](https://github.com/St3451/Thesis_Project_Andersson_Lab/tree/master/Code)
+* [Pilot project](https://github.com/St3451/Bioinformatics_Project_Andersson_Lab)
+
 
 
 # Tool brief documentation :fire:
