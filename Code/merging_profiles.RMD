@@ -1,0 +1,280 @@
+---
+title: "Merging replicates and timepoints"
+author: "Stefano Pellegrini"
+date: "3/27/2021"
+output: html_document
+---
+
+# Load packages and functions
+
+```{r results="hide",message=FALSE, warning=FALSE}
+library(rtracklayer)
+library(tidyverse)
+library(ggforce)
+library(GenomicRanges)
+library(reshape2)
+library(RColorBrewer)
+source("main_script_thesis.R")
+```
+
+
+# Merge the profiles of the replicates from each timepoint
+
+## Initialize
+
+```{r}
+# To set
+ATAC_BP_EXT <- 150
+TIMEPOINT <- "timepoint_15"
+# Input
+INPUT_REPLICATES <- paste0("../Data/ML_input/", TIMEPOINT, "_pos_neg_shift/individual_replicates")
+# Output
+OUT_DIR <- paste0(TIMEPOINT, "_pos_neg_shift","/")
+FILENAME_MERGED <- paste0("pos_neg_shift_", TIMEPOINT, "_merged")
+# Other
+len_vec <- ATAC_BP_EXT * 2 + 1
+```
+
+
+## Merge
+
+```{r}
+# Merge files
+merged_timepoint <- report_time_execution(merge_files(INPUT_REPLICATES, merging="replicates"))
+
+# Positive
+pos_windows <- list()
+pos_windows$profiles <- merged_timepoint$profiles[merged_timepoint$profiles$label == 1, -ncol(merged_timepoint$profiles)]  
+pos_windows$metadata <- merged_timepoint$metadata[merged_timepoint$profiles$label == 1,]
+
+# Negative
+neg_windows <- list()
+neg_windows$profiles <- merged_timepoint$profiles[merged_timepoint$profiles$label == 0, -ncol(merged_timepoint$profiles)]  
+neg_windows$metadata <- merged_timepoint$metadata[merged_timepoint$profiles$label == 0,]
+
+paste("Size total windows profile:", nrow(merged_timepoint$profiles))
+paste("Size positive profiles:", nrow(pos_windows$metadata))
+paste("Size negative profiles:", nrow(neg_windows$metadata))
+```
+
+
+## Export 
+
+```{r}
+## Export data for ML feeding
+
+# Shuffle the data
+index <- sample(nrow(merged_timepoint$profiles))
+windows_profile <- merged_timepoint$profiles[index,]
+windows_metadata <- merged_timepoint$metadata[index,]
+
+# Divide train and test by chr
+test_index <- windows_metadata$chr %in% c("chr2", "chr3", "chr4")
+windows_profile_test <- windows_profile[test_index,]
+windows_metadata_test <- windows_metadata[test_index,]
+windows_profile_train <- windows_profile[!test_index,]
+windows_metadata_train <- windows_metadata[!test_index,]
+
+paste("Size train:", nrow(windows_profile_train))
+paste("Positive profiles train:", nrow(windows_metadata_train[windows_metadata_train$label==1,]))
+paste("Negative profiles train:", nrow(windows_metadata_train[windows_metadata_train$label==0,]))
+paste("Size test:", nrow(windows_profile_test))
+paste("Positive profiles test:", nrow(windows_profile_test[windows_profile_test$label==1,]))
+paste("Negative profiles test:", nrow(windows_profile_test[windows_profile_test$label==0,]))
+
+# Export
+write_csv(windows_profile, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, ".csv"))
+write_csv(windows_metadata, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, ".csv"))
+write_csv(windows_profile_test, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, "_test.csv"))
+write_csv(windows_metadata_test, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, "_test.csv"))
+write_csv(windows_profile_train, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, "_train.csv"))
+write_csv(windows_metadata_train, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, "_train.csv"))
+```
+
+
+## Explore resulting profiles
+
+```{r}
+# Chr distribution
+plot_chr_distribution(pos_windows$metadata, save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_chr_distribution.png"))
+plot_chr_distribution(neg_windows$metadata, save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_chr_distribution.png"))
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(pos_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "positive_set/pos_cage_by_peak_pos.png"))
+plot_cage_distribution_by_peak_position(neg_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "negative_set/neg_cage_by_peak_pos.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (ATAC-Seq peaks number)
+plot_profiles_total_score_distribution(pos_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score1.png"))
+plot_profiles_total_score_distribution(neg_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score1.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (CAGE total coverage per peak)
+plot_profiles_total_score_distribution_alt(pos_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score2.png"))
+plot_profiles_total_score_distribution_alt(neg_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score2.png"))
+
+# Plot the maximum tss score of each window
+plot_max_tss_score_distribution(pos_windows$profiles, save=TRUE,
+                                path=paste0("../Plots/", OUT_DIR, "positive_set/pos_max_tss_score_plot.png"))
+plot_max_tss_score_distribution(neg_windows$profiles, save=TRUE,
+                                path=paste0("../Plots/", OUT_DIR, "negative_set/neg_max_tss_score_plot.png"))
+
+# Plot different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr.png"))
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr_fixedAxis.png"))
+plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr.png"))
+plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr_fixedAxis.png"))
+
+# Plot some profiles
+plot_set_profiles(pos_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles1.png")) 
+plot_set_profiles(pos_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles11.png")) 
+plot_set_profiles(pos_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles2.png")) 
+plot_set_profiles(pos_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles3.png")) 
+plot_set_profiles(pos_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles4.png")) 
+plot_set_profiles(neg_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles1.png")) 
+plot_set_profiles(neg_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles11.png")) 
+plot_set_profiles(neg_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles2.png")) 
+plot_set_profiles(neg_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles3.png")) 
+plot_set_profiles(neg_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles4.png")) 
+```
+
+
+
+
+
+# Merge all timepoints extracted profiles (0 to 2)
+
+## Initialize
+
+```{r}
+# To set
+ATAC_BP_EXT <- 150
+EXTRACTION <- "pos_neg_shift"
+OUT_DIR <- paste0("COMPLETE_", EXTRACTION, "/")
+FILENAME_MERGED <- paste0(EXTRACTION, "_timepoint_0to2_all_merged")
+INPUT_TIMEPOINTS <- paste0("../Data/ML_input/individual_timepoints_merged_pos_neg_shift/timepoints_0_to_2")
+len_vec <- ATAC_BP_EXT * 2 + 1
+```
+
+
+## Merge
+
+```{r}
+# Merge timepoints
+merged_timepoint <- report_time_execution(merge_files(INPUT_TIMEPOINTS))
+
+# Positive
+pos_windows <- list()
+pos_windows$profiles <- merged_timepoint$profiles[merged_timepoint$profiles$label == 1, -ncol(merged_timepoint$profiles)]  
+pos_windows$metadata <- merged_timepoint$metadata[merged_timepoint$profiles$label == 1,]
+
+# Negative
+neg_windows <- list()
+neg_windows$profiles <- merged_timepoint$profiles[merged_timepoint$profiles$label == 0, -ncol(merged_timepoint$profiles)]  
+neg_windows$metadata <- merged_timepoint$metadata[merged_timepoint$profiles$label == 0,]
+
+paste("Size total windows profile:", nrow(merged_timepoint$profiles))
+paste("Size positive profiles:", nrow(pos_windows$metadata))
+paste("Size negative profiles:", nrow(neg_windows$metadata))
+```
+
+
+## Export
+
+```{r}
+## Export data for ML feeding
+
+# Shuffle the data
+index <- sample(nrow(merged_timepoint$profiles))
+windows_profile <- merged_timepoint$profiles[index,]
+windows_metadata <- merged_timepoint$metadata[index,]
+
+# Divide train and test by chr
+test_index <- windows_metadata$chr %in% c("chr2", "chr3", "chr4")
+windows_profile_test <- windows_profile[test_index,]
+windows_metadata_test <- windows_metadata[test_index,]
+windows_profile_train <- windows_profile[!test_index,]
+windows_metadata_train <- windows_metadata[!test_index,]
+
+paste("Size train:", nrow(windows_profile_train))
+paste("Positive profiles train:", nrow(windows_metadata_train[windows_metadata_train$label==1,]))
+paste("Negative profiles train:", nrow(windows_metadata_train[windows_metadata_train$label==0,]))
+paste("Size test:", nrow(windows_profile_test))
+paste("Positive profiles test:", nrow(windows_profile_test[windows_profile_test$label==1,]))
+paste("Negative profiles test:", nrow(windows_profile_test[windows_profile_test$label==0,]))
+
+# Export
+write_csv(windows_profile, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, ".csv"))
+write_csv(windows_metadata, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, ".csv"))
+write_csv(windows_profile_test, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, "_test.csv"))
+write_csv(windows_metadata_test, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, "_test.csv"))
+write_csv(windows_profile_train, paste0("../Data/ML_input/profiles_", FILENAME_MERGED, "_train.csv"))
+write_csv(windows_metadata_train, paste0("../Data/ML_input/metadata_", FILENAME_MERGED, "_train.csv"))
+```
+
+
+## Explore resulting profiles
+
+```{r}
+# Chr distribution
+plot_chr_distribution(pos_windows$metadata, save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_chr_distribution.png"))
+plot_chr_distribution(neg_windows$metadata, save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_chr_distribution.png"))
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(pos_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "positive_set/pos_cage_by_peak_pos.png"))
+plot_cage_distribution_by_peak_position(neg_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "negative_set/neg_cage_by_peak_pos.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (ATAC-Seq peaks number)
+plot_profiles_total_score_distribution(pos_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score1.png"))
+plot_profiles_total_score_distribution(neg_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score1.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (CAGE total coverage per peak)
+plot_profiles_total_score_distribution_alt(pos_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score2.png"))
+plot_profiles_total_score_distribution_alt(neg_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score2.png"))
+
+# Plot the maximum tss score of each window
+plot_max_tss_score_distribution(pos_windows$profiles, save=TRUE,
+                                path=paste0("../Plots/", OUT_DIR, "positive_set/pos_max_tss_score_plot.png"))
+plot_max_tss_score_distribution(neg_windows$profiles, save=TRUE,
+                                path=paste0("../Plots/", OUT_DIR, "negative_set/neg_max_tss_score_plot.png"))
+
+# Plot different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr.png"))
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr_fixedAxis.png"))
+plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr.png"))
+plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr_fixedAxis.png"))
+
+# Plot some profiles
+plot_set_profiles(pos_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles1.png")) 
+plot_set_profiles(pos_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles11.png")) 
+plot_set_profiles(pos_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles2.png")) 
+plot_set_profiles(pos_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles3.png")) 
+plot_set_profiles(pos_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles4.png")) 
+plot_set_profiles(neg_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles1.png")) 
+plot_set_profiles(neg_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles11.png")) 
+plot_set_profiles(neg_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles2.png")) 
+plot_set_profiles(neg_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles3.png")) 
+plot_set_profiles(neg_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles4.png")) 
+```

@@ -1,0 +1,514 @@
+---
+title: "Input extraction"
+author: "Stefano Pellegrini"
+date: "3/27/2021"
+output: html_document
+---
+
+# Load packages and functions
+
+```{r results="hide",message=FALSE, warning=FALSE}
+library(rtracklayer)
+library(tidyverse)
+library(ggforce)
+library(GenomicRanges)
+library(reshape2)
+library(RColorBrewer)
+source("main_script_thesis.R")
+```
+
+
+# Initialize
+
+```{r}
+# To set
+ATAC_BP_EXT <- 150
+TIMEPOINT <- "timepoint_15"
+CAGE_FILENAME <- "hg38.CAGE_VRQ4_Pool_88_H3.bed"
+CAGE_REPLICATE <- "H3"
+N_REP <- "4"
+# Output
+OUT_DIR <- paste0(TIMEPOINT, "_pos_neg_shift","/")
+FILENAME <- paste0("pos_neg_shift_", TIMEPOINT, "_", CAGE_REPLICATE)
+# Input
+ATAC_FILENAME <- paste0("ATAC_idr.optimal_peak_", TIMEPOINT, ".narrowPeak")
+CAGE_FILENAME_PATH <- paste0(TIMEPOINT, "/", CAGE_FILENAME)
+# Other
+len_vec <- ATAC_BP_EXT * 2 + 1
+POS_BP_SHIFT <- 10 * as.numeric(N_REP)
+NEG_BP_SHIFT <- 5 + (5 * as.numeric(N_REP))
+```
+
+
+# Pool different time 0 replicates
+
+```{bash eval=FALSE}
+# Sort bed file by chr and start position
+cat A.bed B.bed .. | sort -k1,1 -k2,2n | mergeBed > AB.bed
+
+# Merge the bed files (they need to be sorted by chr first and then start position) 
+# Take into account the strand (-s), merge only overlapping position (-d -1)
+# Sum the score and report the strand (-c 5,6)
+bedtools merge -i AFKS_head_sorted.bed -s -d -1 -c 5,6 -o sum,distinct
+
+# One-line command
+cat *.bed | sort -k1,1 -k2,2n | bedtools merge -s -d -1 -c 5,6 -o sum,distinct > merged_ctss_timepoint_0.bed
+```
+
+
+```{r}
+# Load data
+ATAC_granges <- import(paste0("../Data/atac_files/", ATAC_FILENAME, ".gz"), format="gz")
+# CAGE_granges <- import("../Data/ctss_files/merged_ctss_timepoint_0.bed", format="bed")
+CAGE_granges <- import(paste0("../Data/ctss_files/", CAGE_FILENAME_PATH, ".gz"), format="gz")
+genome(ATAC_granges) <- "hg38"
+genome(CAGE_granges) <- "hg38"
+ATAC_granges
+CAGE_granges
+```
+
+
+# Extract the positive set
+
+```{r}
+# Extend ATAC peaks 250 bp in both directions
+ATAC_granges_peaks <- GRanges(seqnames = seqnames(ATAC_granges),
+                              ranges = IRanges(start = start(ATAC_granges) + ATAC_granges$peak, width = 1),
+                              strand = strand(ATAC_granges))
+genome(ATAC_granges_peaks) <- "hg38"
+
+start(ATAC_granges_peaks) <- start(ATAC_granges_peaks) - ATAC_BP_EXT
+end(ATAC_granges_peaks) <- end(ATAC_granges_peaks) + ATAC_BP_EXT
+ranges(ATAC_granges_peaks)
+ATAC_granges_peaks
+```
+
+
+## Remove blacklist overlapping regions
+
+```{r}
+# Load blacklist and remove overlapping ATAC regions
+blacklist_new <- import("../Data/hg38.blacklist_new.bed", format="bed")
+ATAC_granges_peaks <- filter_blacklist(ATAC_granges_peaks, blacklist_new)
+```
+
+
+## Extract the windows profile
+
+```{r}
+atac_windows <- report_time_execution(get_windows_profiles(CAGE_granges, 
+                                                           ATAC_granges_peaks))
+paste("Extracted profiles:", nrow(atac_windows$metadata))
+```
+
+
+## Rank approach to remove intra overlapping ATAC 
+
+```{r}
+# Compute some measure of the rank and use it to remove the overlaps: total cage score (1), max TSS score (2)
+pos_windows <- report_time_execution(remove_overlaps_by_rank(atac_windows))
+paste("Extracted profiles after removing overlaps by ranks:", nrow(pos_windows$metadata))
+```
+
+
+## Extract the profiles of positive regions shifted by +-10 bp (rep1), +-20 bp (rep2) etc
+
+```{r}
+# I should retrieve the granges from the pos_windows resulting from rank approach
+# Then I should shift them and generate a granges set
+
+# Convert CAGE profiles to GRanges object
+ATAC_granges_after_rank <- profiles_to_granges(pos_windows)
+
+# Add ranges of the shifted positive regions            # REP1: +-5, 10. REP2: +-10, 20
+ATAC_granges_peaks_shifted <- GRanges(rbind(as.data.frame(shift(ATAC_granges_after_rank, POS_BP_SHIFT)),                    
+                                            #as.data.frame(shift(ATAC_granges_after_rank, POS_BP_SHIFT * 2)),
+                                            as.data.frame(shift(ATAC_granges_after_rank, -POS_BP_SHIFT))
+                                            #as.data.frame(shift(ATAC_granges_after_rank, -POS_BP_SHIFT * 2))
+                                            ))
+
+# Extract their profile
+pos_windows_shifted <- report_time_execution(get_windows_profiles(CAGE_granges, 
+                                                                  ATAC_granges_peaks_shifted))
+paste("Extracted shifted profiles:", nrow(pos_windows_shifted$metadata))
+# Add max and total score to metadata
+pos_windows_shifted$metadata <- pos_windows_shifted$metadata %>% mutate(total_score = apply(pos_windows_shifted$profiles, 1, sum),
+                                                                        max_score = apply(pos_windows_shifted$profiles, 1, max))
+
+# Merge the positive and shifted positive profiles
+pos_windows$profiles <- rbind(pos_windows$profiles, pos_windows_shifted$profiles)
+pos_windows$metadata <- rbind(pos_windows$metadata, pos_windows_shifted$metadata)
+paste("Merged positive and shifted positive profiles:", nrow(pos_windows$metadata))
+```
+
+
+## Filtering 
+
+```{r}
+# Filter by minimal CAGE requirement (TSS with atleast 2)
+pos_windows$profiles <- pos_windows$profiles[pos_windows$metadata$max_score >= 2,]
+pos_windows$metadata <- pos_windows$metadata[pos_windows$metadata$max_score >= 2,] %>% select(-total_score, -max_score)
+paste("Extracted profiles after CAGE filtering:", nrow(pos_windows$metadata))
+```
+
+
+## Exploration of the obtained profiles
+
+```{r}
+## General profiles exploration
+
+# Plot chr distribution
+plot_chr_distribution(pos_windows$metadata,
+                      save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_chr_distribution.png"))
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(pos_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "positive_set/pos_cage_by_peak_pos.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (ATAC-Seq peaks number)
+plot_profiles_total_score_distribution(pos_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score1.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (CAGE total coverage per peak)
+plot_profiles_total_score_distribution_alt(pos_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_total_cage_score2.png"))
+
+# Plot the maximum tss score of each window
+plot_max_tss_score_distribution(pos_windows$profiles, save=TRUE, y_zoom=c(0, 5000),
+                                path=paste0("../Plots/", OUT_DIR, "positive_set/pos_max_tss_score_plot.png"))
+
+# Exploration of different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr.png"))
+plot_score_distribution_by_pos_by_chr(pos_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+                                      path=paste0("../Plots/", OUT_DIR, "positive_set/pos_windows_score_by_pos_by_chr_fixedAxis.png"))
+
+# Exploration of different chromosomes profiles
+plot_set_profiles(pos_windows, chr="chr1", sort=FALSE, save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles1.png")) 
+plot_set_profiles(pos_windows, chr="chr11", sort=FALSE, save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles11.png")) 
+plot_set_profiles(pos_windows, chr="chr2", sort=FALSE, save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles2.png")) 
+plot_set_profiles(pos_windows, chr="chr3", sort=FALSE, save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles3.png")) 
+plot_set_profiles(pos_windows, chr="chr4", sort=FALSE, save=TRUE, path = paste0("../Plots/", OUT_DIR, "positive_set/pos_profiles4.png")) 
+```
+
+
+# Extract the negative set
+
+## Export data and use it to generate negative ranges by bedtools shuffle
+
+```{r}
+# Export ATAC data that will be used to generate the negative set (bedtools)
+# -> The operations needed to generate the new granges object (this and the next chunk), that it will be used to extract the negative set, 
+#    is necessary only if different ATAC-Seq data is used (or if different vector or central core size is used)
+
+# Duplicate 12 times the ATAC_peaks so to use as -i to generate more ranges with shuffle                              ## ----> USE REP <---- ##
+ATAC_granges_duplicated <- GRanges(rbind(as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks),
+                                         as.data.frame(ATAC_granges_peaks)))
+
+# Duplicate 36 times to maximize the number of negative samples
+ATAC_granges_duplicated <- GRanges(rbind(as.data.frame(ATAC_granges_duplicated),
+                                         as.data.frame(ATAC_granges_duplicated),
+                                         as.data.frame(ATAC_granges_duplicated)))
+
+export(ATAC_granges_duplicated, paste0("../Data/atac_positive_all_granges_", as.character(len_vec), "_duplicatedX36_", TIMEPOINT, ".bed"), format = "bed")
+#export(ATAC_granges_peaks, paste0("../Data/atac_positive_all_granges_", as.character(len_vec), ".bed"), format = "bed")
+```
+
+
+```{r}
+# Extend ATAC peaks 50 bp in both directions to define the central region of the ATAC positive region
+# -> it will be used to generate the new negative set, allowing partial overlaps with the ATAC region (and therefore the positive set), 
+#    but not with the 100bp around its central peak
+
+ATAC_central_regions <- GRanges(seqnames = seqnames(ATAC_granges),
+                                ranges = IRanges(start = start(ATAC_granges) + ATAC_granges$peak, width = 1),
+                                strand = strand(ATAC_granges))
+genome(ATAC_central_regions) <- "hg38"
+
+start(ATAC_central_regions) <- start(ATAC_central_regions) - 50
+end(ATAC_central_regions) <- end(ATAC_central_regions) + 50
+ranges(ATAC_central_regions)
+ATAC_central_regions
+
+export(ATAC_central_regions, paste0("../Data/atac_positive_granges_central_core_101_", TIMEPOINT, ".bed"), format = "bed")
+```
+
+
+```{bash eval=FALSE}
+# Generate negative set ranges (from negative_sets directory) in such a way that:
+# - They will be the same size, num and strand proportion as atac positive granges (or the granges provided as -i), blacklist and atac positive granges will not be included, don't allow overlaps
+# - When changing data, change timepoint and replicate number
+bedtools shuffle -i ../atac_positive_all_granges_501_duplicatedX12.bed -g ../hg38.bed -excl hg38.blacklist_new -excl ../atac_positive_all_granges_501.bed -noOverlapping > negative_set_duplicateX12_noOverlaps.bed
+
+                                                                             ##                                                                                                       ##
+bedtools shuffle -i ../atac_positive_all_granges_301_duplicatedX36_timepoint_6.bed -g ../hg38.bed -excl hg38.blacklist_new -excl ../atac_positive_granges_central_core_101_timepoint_6.bed -noOverlapping > negative_set_301_duplicateX36_core_101_timepoint_6_rep4.bed
+                                                 ##    #
+```
+
+
+## Extraction of negative profiles
+
+```{r}
+# Import negative set ranges and check for overlaps
+negative_set_granges <- import(paste0("../Data/negative_set_", as.character(len_vec), "_duplicateX36_core_101_", TIMEPOINT, "_rep", N_REP, ".bed"), format = "bed")
+
+# Check for overlaps with ATAC positive regions and between granges in the same file
+paste("Ovelaps with 301 bp ATAC positive regions:", length(findOverlaps(negative_set_granges, ATAC_granges_peaks)))
+paste("Ovelaps with 101 bp ATAC central core:", length(findOverlaps(negative_set_granges, ATAC_central_regions)))
+paste("Ranges before extraction:", length(negative_set_granges))
+paste("Within overlaps:", sum(countOverlaps(negative_set_granges) > 1))
+
+# Check overlaps with blacklist
+negative_set_granges <- filter_blacklist(negative_set_granges, blacklist_new)
+```
+
+
+### Add shifted ATAC core flanking regions to the negative ranges
+
+```{r}
+# Get central core of ATAC positive ranges after rank
+ATAC_central_core_after_rank <- shift(resize(ATAC_granges_after_rank, 101), 100)[,c(-1,-2)]
+print("ATAC ranges central core:")
+ranges(ATAC_central_core_after_rank[1:5])
+
+# Get shifted flanking regions left and right                     
+# REP1: +-10, 20, 30 
+# REP2: +-15, 30, 35 
+# REP3: +-20, 40, 60
+# REP4: +-25, 50, 75
+neg_shifted_flanking_atac_core <- unique(GRanges(rbind(as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=TRUE), -NEG_BP_SHIFT)),
+                                                       as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=TRUE), -NEG_BP_SHIFT * 2)),
+                                                       as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=TRUE), -NEG_BP_SHIFT * 3)),
+                                                       as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=FALSE), NEG_BP_SHIFT)),
+                                                       as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=FALSE), NEG_BP_SHIFT * 2)),
+                                                       as.data.frame(shift(flank(ATAC_central_core_after_rank, len_vec, start=FALSE), NEG_BP_SHIFT * 3))
+                                                       )))
+
+# Remove regions overlapping any ATAC positive regions central core (before any filtering)
+overlaps_result <- findOverlaps(neg_shifted_flanking_atac_core, ATAC_central_regions)
+writeLines("\n")
+paste("Flanking negative overlaps with ATAC core before filtering:", length(overlaps_result))
+index_overlapping_core <- queryHits(overlaps_result)
+neg_shifted_flanking_atac_core <- unique(neg_shifted_flanking_atac_core[-index_overlapping_core,])
+paste("Flanking negative overlaps with ATAC core after redundancy and overlaps removal:", 
+      length(findOverlaps(neg_shifted_flanking_atac_core, ATAC_central_regions)))
+
+# Merge together new flanking and negative set ranges
+negative_set_granges_new <- GRanges(rbind(as.data.frame(negative_set_granges[,c(-1,-2)]),
+                                          as.data.frame(neg_shifted_flanking_atac_core)))
+
+# Remove identical ranges
+negative_set_granges_new <- unique(negative_set_granges_new)
+paste0("Identical ranges removed: ", length(negative_set_granges_new) - length(negative_set_granges_new))
+
+# Check for overlaps with ATAC core
+paste("Original and flanking negative overlaps with ATAC core after merging:",
+      length(findOverlaps(negative_set_granges_new, ATAC_central_regions)))
+
+
+# Check overlaps with blacklist
+negative_set_granges_new <- filter_blacklist(negative_set_granges_new, blacklist_new)
+
+# Report
+paste0("Original negative ranges: ", length(negative_set_granges))
+paste0("Final negative ranges: ", length(negative_set_granges_new))
+paste0("Added negative ranges flanking to ATAC core: ", length(negative_set_granges_new) - length(negative_set_granges))
+```
+
+
+### Profiles extraction of the negative set (negative ranges shuffled from genome and obtained from regions flanking ATAC central core)
+
+```{r}
+# Extract CAGE profiles
+neg_windows <- report_time_execution(get_windows_profiles(CAGE_granges, 
+                                                          negative_set_granges_new))
+
+# Check for profiles that do not overlap CAGE data
+neg_windows <- filter_empty_profiles(neg_windows)
+
+paste("Extracted profiles:", nrow(neg_windows$metadata))
+```
+
+
+## Compare the added negative extracted profiles with the old ones
+
+### Get profiles of the two groups of profiles (shuffled from genome and flanking ATAC central cores)
+
+```{r eval=FALSE}
+## Shifted ranges from flanking regions
+
+# Check overlaps with blacklist
+negative_set_granges <- filter_blacklist(negative_set_granges[,c(-1,-2)], blacklist_new)
+paste("Original negative windows after blacklist filter:", length(negative_set_granges))
+# Extract CAGE profiles
+neg_windows_original <- report_time_execution(get_windows_profiles(CAGE_granges, negative_set_granges))
+# Check for profiles that do not overlap CAGE data
+neg_windows_original <- filter_empty_profiles(neg_windows_original) 
+paste("Original negative extracted profiles:", nrow(neg_windows_original$metadata))
+# Filter by CAGE signal
+neg_windows_original <- windows_profiles_filter(neg_windows_original)
+paste("Original negative profiles after CAGE filter:", nrow(neg_windows_original$metadata))
+
+
+## Original negative ranges
+
+# Check overlaps with blacklist
+neg_shifted_flanking_atac_core <- filter_blacklist(neg_shifted_flanking_atac_core, blacklist_new)
+paste("New negative windows after blacklist filter:", length(neg_shifted_flanking_atac_core))
+# Extract CAGE profiles
+neg_windows_new <- report_time_execution(get_windows_profiles(CAGE_granges, neg_shifted_flanking_atac_core))
+# Check for profiles that do not overlap CAGE data
+neg_windows_new <- filter_empty_profiles(neg_windows_new)        
+paste("New negative extracted profiles:", nrow(neg_windows_new$metadata))
+# Filter by CAGE signal
+neg_windows_new <- windows_profiles_filter(neg_windows_new)
+paste("New negative profiles after CAGE filter:", nrow(neg_windows_new$metadata))
+```
+
+
+### Exploration of the obtained profiles (shuffled profiles)
+
+```{r eval=FALSE}
+## General profiles exploration
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(neg_windows_original$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "negative_set/neg_cage_by_peak_pos_OriginalProfiles.png"),
+                                        title ="Original negative shuffled profiles")
+
+# Exploration of different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(neg_windows_original, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr_OriginalProfiles.png"),
+                                        title ="Original negative shuffled profiles")
+```
+
+### Exploration of the obtained profiles (new added shifted flanking profiles)
+
+```{r eval=FALSE}
+## General profiles exploration
+
+# Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(neg_windows_new$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "negative_set/neg_cage_by_peak_pos_NewFlankingProfiles.png"),
+                                        title ="Flanking negative profiles")
+
+# Exploration of different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(neg_windows_new, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr_NewFlankingProfiles.png"),
+                                      title ="Flanking negative profiles")
+```
+
+
+## Negative set filtering (filtering by CAGE requirement (at least a TSS of 2)) 
+
+### Filtering and sampling
+
+```{r}
+# Filter the negative profiles by CAGE signal 
+neg_windows_filtered_atleast_2_sum <- windows_profiles_filter(neg_windows, fun = sum)
+neg_windows_filtered <- windows_profiles_filter(neg_windows)
+neg_windows_filtered_atleast_3_max <- windows_profiles_filter(neg_windows, threshold = 2)
+
+print(paste("Original windows number:", nrow(neg_windows$profiles)))
+print(paste("N. windows after filtering (at least 2 reads in total):", nrow(neg_windows_filtered_atleast_2_sum$profiles)))
+print(paste("N. windows after filtering (at least a TSS with 2 reads):", nrow(neg_windows_filtered$profiles)))
+print(paste("N. windows after filtering (at least a TSS with 3 reads):", nrow(neg_windows_filtered_atleast_3_max$profiles)))
+
+## Sampling from filtered negative set by minimum TSS score
+# ratio_pos_neg <- 1
+# neg_windows <- windows_sampling(neg_windows_filtered, size=nrow(pos_windows$metadata) * ratio_pos_neg)
+# print(paste("N. windows sampled:", nrow(neg_windows$profiles)))
+
+# Use full negative set
+neg_windows <- neg_windows_filtered
+print(paste("N. windows obtained after filtering:", nrow(neg_windows$profiles)))
+```
+
+
+### Filtered negative set exploration
+
+```{r}
+# Chr distribution
+plot_chr_distribution(neg_windows$metadata, save=TRUE, 
+                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_chr_distribution.png"))
+
+# # Plot the distribution of CAGE coverage for ATAC-Seq peak relative positions
+plot_cage_distribution_by_peak_position(neg_windows$profiles, save=TRUE,
+                                        path=paste0("../Plots/", OUT_DIR, "negative_set/neg_cage_by_peak_pos.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (ATAC-Seq peaks number)
+plot_profiles_total_score_distribution(neg_windows$profiles, save=TRUE, 
+                                       path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score1.png"))
+
+# Plot distribution of ATAC-Seq peaks CAGE total coverage (CAGE total coverage per peak)
+plot_profiles_total_score_distribution_alt(neg_windows$profiles, save=TRUE, 
+                                           path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_total_cage_score2.png"))
+
+# Plot the maximum tss score of each window
+plot_max_tss_score_distribution(neg_windows$profiles, save=TRUE,
+                                path=paste0("../Plots/", OUT_DIR, "negative_set/neg_max_tss_score_plot.png"))
+
+# Plot different chromosomes score distribution
+plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, 
+                                      path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr.png"))
+# plot_score_distribution_by_pos_by_chr(neg_windows, save=TRUE, scales="fixed", coord_ylim=c(-100, 100),
+#                                       path=paste0("../Plots/", OUT_DIR, "negative_set/neg_windows_score_by_pos_by_chr_fixedAxis.png"))
+
+# Plot some profiles
+plot_set_profiles(neg_windows, chr="chr1", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles1.png")) 
+plot_set_profiles(neg_windows, chr="chr11", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles11.png")) 
+plot_set_profiles(neg_windows, chr="chr2", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles2.png")) 
+plot_set_profiles(neg_windows, chr="chr3", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles3.png")) 
+plot_set_profiles(neg_windows, chr="chr4", save=TRUE, path = paste0("../Plots/", OUT_DIR, "negative_set/neg_profiles4.png")) 
+```
+
+
+# Export data for ML feeding
+
+```{r}
+## Export data for ML feeding
+
+# Merge positive and negative examples
+windows_profile <- rbind(mutate(pos_windows$profiles, label = 1), 
+                         mutate(neg_windows$profiles, label = 0))
+windows_metadata <- rbind(mutate(pos_windows$metadata, label = 1), 
+                          mutate(neg_windows$metadata, label = 0))
+
+# Shuffle the data
+index <- sample(nrow(windows_profile))
+windows_profile <- windows_profile[index,]
+windows_metadata <- windows_metadata[index,]
+
+paste("Size windows profile", nrow(windows_profile))
+paste("Size positive windows profile (filtered)", nrow(pos_windows$profile))
+paste("Size negative windows profile (filtered and sampled)", nrow(neg_windows$profile))
+
+# Divide train and test by chr
+test_index <- windows_metadata$chr %in% c("chr2", "chr3", "chr4")
+windows_profile_test <- windows_profile[test_index,]
+windows_metadata_test <- windows_metadata[test_index,]
+windows_profile_train <- windows_profile[!test_index,]
+windows_metadata_train <- windows_metadata[!test_index,]
+
+# Export
+write_csv(windows_profile, paste0("../Data/ML_input/profiles_", FILENAME, ".csv"))
+write_csv(windows_metadata, paste0("../Data/ML_input/metadata_", FILENAME, ".csv"))
+write_csv(windows_profile_test, paste0("../Data/ML_input/profiles_", FILENAME, "_test.csv"))
+write_csv(windows_metadata_test, paste0("../Data/ML_input/metadata_", FILENAME, "_test.csv"))
+write_csv(windows_profile_train, paste0("../Data/ML_input/profiles_", FILENAME, "_train.csv"))
+write_csv(windows_metadata_train, paste0("../Data/ML_input/metadata_", FILENAME, "_train.csv"))
+```
+
+
+
