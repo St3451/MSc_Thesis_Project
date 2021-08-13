@@ -1,4 +1,4 @@
-# MSc thesis project at Andersson Lab
+# MSc thesis project
 This repository contains the report, presentation slides, and code of my MSc thesis project that I performed at the Andersson Lab (Bioinformatics Centre, University of Copenhagen). 
 
 ## Project title: "Development of a supervised machine learning tool to infer active regulatory elements from transcription initiation events"
