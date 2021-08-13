@@ -3,10 +3,10 @@ This repository contains the report, presentation slides, and code of my MSc the
 
 ## Project title: "Development of a supervised machine learning tool to infer active regulatory elements from transcription initiation events"
 
-* [Project report](https://github.com/St3451/Thesis_Project_Andersson_Lab/blob/master/Thesis_report.pdf)
-* [Presentation slides](https://github.com/St3451/Thesis_Project_Andersson_Lab/raw/master/Presentation_slides.pptx)
-* [Project code](https://github.com/St3451/Thesis_Project_Andersson_Lab/tree/master/Code)
-* [Pilot project](https://github.com/St3451/Bioinformatics_Project_Andersson_Lab)
+* [Project report](https://github.com/St3451/Thesis_Project/blob/master/Thesis_report.pdf)
+* [Presentation slides](https://github.com/St3451/Thesis_Project/raw/master/Presentation_slides.pptx)
+* [Project code](https://github.com/St3451/Thesis_Project/tree/master/Code)
+* [Pilot project](https://github.com/St3451/Bioinformatics_Project)
 
 
 
